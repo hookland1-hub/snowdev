@@ -1,417 +1,418 @@
-# Handoff — ServiceNow Now SDK: authenticated, full‑potential development & deploy (complete knowledge base)
+# Handoff — ServiceNow Now SDK, full‑potential authenticated setup (single self‑contained bootstrap)
 
-This document is a **self‑contained, project‑agnostic** knowledge base for building ServiceNow
-scoped applications locally with the **Now SDK + Fluent** and delivering them **directly to an
-instance** using the SDK's full authenticated workflow (`auth → build → install/transform → deploy`).
+**Purpose.** This is the **one document** an operator (or an AI agent on a brand‑new machine, with no
+prior context) reads to stand up a **100 % working ServiceNow development session** using the Now SDK
++ Fluent at full capability: connected to an instance, with the official ServiceNow skill and the
+Superpowers skills installed, ready to build, install, round‑trip and verify real applications.
 
-It is the **companion** to the no‑auth/offline variant. Difference in one line: here we **do**
-connect to an instance, so we get the full capability set — live install, round‑trip sync, UI Builder
-surfaces, and SDK‑managed update sets — instead of the offline XML‑converter workaround.
+It is an **initial setup** guide — generic, project‑agnostic. It does **not** carry any specific
+user‑story / business detail. Placeholders:
 
-It contains no client, project, vendor or scope specifics. Everywhere a project would put a real
-value, this doc uses placeholders:
-
-- `<scope>` → e.g. `x_<vendor>_<app>` (vendor prefix + app code), all lowercase.
+- `<scope>` → `x_<vendor>_<app>` (vendor prefix + app code), all lowercase.
 - `<scopeId>` → a stable 32‑char hex sys_id for the scope.
 - `<AppName>` → human application name.
-- `<table>` → `<scope>_<entity>`.
-- `<instance>` → `https://<name>.service-now.com` (dev/test/prod target).
+- `<instance>` → `https://<name>.service-now.com`.
+- `<alias>` → a short name for a saved auth credential.
 
-A fresh AI session can read this file alone and reproduce the entire capability set.
-
----
-
-## 0. The one idea
-
-With an authenticated connection the SDK is the delivery mechanism end‑to‑end. `now-sdk build`
-compiles Fluent metadata into records; `now-sdk install`/`deploy` pushes them **into the target
-instance** inside an SDK‑managed application/update set — **no manual XML conversion, no manual
-Retrieved‑Update‑Sets import**. You can also pull instance state back down and reconcile it.
-
-```
-Fluent (.now.ts)  ──now-sdk build──▶  dist/app/*   ──now-sdk install──▶  <instance> (scoped app + update set)
-        ▲                                                                        │
-        └──────────────── now-sdk transform / pull (round‑trip sync) ◀───────────┘
-```
-
-When to still produce an XML update set: only for **air‑gapped / change‑controlled prod** where ops
-import manually. In that case fall back to the offline‑converter handoff. For dev/test, deploy
-directly.
+Everything below was **verified against `@servicenow/sdk` 4.7.2** and **Claude Code 2.1.x** on
+Windows. Where a fact is version‑dependent, the doc says to re‑check with `--help` / `explain`.
 
 ---
 
-## 1. Operating mode (authenticated)
+## PART A — Configure the AI session (do this FIRST, once per machine)
 
-This mode **uses** the instance‑connecting commands. They are expected, not forbidden:
+The AI session's ServiceNow superpowers come from **Claude Code plugins** (which provide *skills*),
+plus the **Now SDK** CLI. Three installs, in order.
 
-```
-now-sdk auth        # connect/login to an instance (OAuth or basic)
-now-sdk install     # push the scoped app to the connected instance
-now-sdk deploy      # deploy / promote the app
-now-sdk transform   # reconcile/convert artifacts; sync instance ↔ source
-```
-
-Guardrails (still important):
-- **Confirm the target instance before any write command.** `install`/`deploy` mutate a live system.
-  Default to a **dev/sub‑prod** instance; never deploy to prod without explicit, per‑action approval.
-- Treat credentials/tokens as secrets: never hard‑code them, never echo them, never commit them.
-  Prefer **OAuth** profiles over stored basic‑auth passwords.
-- Keep prod deploys behind the same review as any production change.
-
----
-
-## 2. Machine prerequisites
+### A.1 Base tooling
 
 ```
 OS:        Windows (PowerShell) or any OS with a POSIX shell
-Node.js:   recent LTS or newer
+Node.js:   recent LTS or newer        (validated alongside SDK 4.7.2)
 npm:       bundled with Node
-SDK:       @servicenow/sdk  (>= 4.6.0 for `explain`; 4.7.x validated)
-TypeScript: ^5.x (devDependency)
-Access:    a ServiceNow instance + a user with rights to install scoped apps
-           (admin or App Engine / delegated‑dev role on the target)
-Optional:  ripgrep (rg) for fast searches, git for VCS
+Claude Code: 2.1.x or newer (the `claude` CLI must be on PATH)
+Optional:  ripgrep (rg), git
 ```
 
-Install once per project: `npm install`. Then authenticate once per instance (see §6).
+### A.2 Install the Now SDK
+
+Install globally so `now-sdk` is on PATH (it is also pulled per‑project as a devDependency):
+
+```powershell
+npm install -g @servicenow/sdk           # provides the `now-sdk` binary
+now-sdk --version                        # expect 4.7.x (>= 4.6.0 required for `explain`)
+```
+
+### A.3 Install the Claude Code skills (THE part that makes the agent capable)
+
+Skills are delivered as plugins from **git marketplaces**. Add the two marketplaces, then install the
+two plugins. Verified command surface (`claude plugin --help`):
+
+```powershell
+# 1) Add the marketplaces (GitHub repos):
+claude plugin marketplace add anthropics/claude-plugins-official
+claude plugin marketplace add obra/superpowers-marketplace
+
+# 2) Install the plugins (syntax: <plugin>@<marketplace>):
+claude plugin install servicenow-sdk@claude-plugins-official    # → skill: fluent:now-sdk-explain
+claude plugin install superpowers@superpowers-marketplace        # → skills: superpowers:*
+
+# 3) Verify:
+claude plugin list                       # both should show Status: enabled
+```
+
+What each gives the agent:
+
+| Plugin | Marketplace (GitHub) | Skill(s) it surfaces | Why it matters |
+|---|---|---|---|
+| `servicenow-sdk` | `anthropics/claude-plugins-official` | `fluent:now-sdk-explain` | Pulls SDK docs on demand (`now-sdk explain`) — API types, conventions, project structure. The agent **must** use this before writing Fluent. |
+| `superpowers` | `obra/superpowers-marketplace` | `superpowers:brainstorming`, `:test-driven-development`, `:systematic-debugging`, `:writing-plans`, `:executing-plans`, `:verification-before-completion`, `:requesting-code-review`, … | The disciplined workflow (design → plan → TDD → verify) the agent follows. |
+
+Notes:
+- Plugins install at **user scope** by default (`-s project` / `-s local` to scope to a repo).
+- Restart the Claude Code session after install so skills load.
+- `claude plugin update <plugin>` to upgrade; `claude plugin marketplace update` to refresh sources.
+- The agent invokes a skill via its **Skill tool** (e.g. `fluent:now-sdk-explain`); a human types
+  `/<skill>` — never read skill files directly.
+
+**Session is "configured" when:** `now-sdk --version` works **and** `claude plugin list` shows both
+`servicenow-sdk` and `superpowers` enabled.
 
 ---
 
-## 3. Project scaffold
+## PART B — Authenticate & scaffold the project
+
+### B.1 Authenticate to an instance (verified flags: `now-sdk auth --help`)
+
+```powershell
+# Add a credential (prefer OAuth; basic also supported):
+now-sdk auth --add <instance> --type oauth --alias <alias>
+now-sdk auth --add <instance> --type basic --alias <alias>   # alternative
+
+now-sdk auth --list                 # show saved credentials
+now-sdk auth --use <alias>          # set the default credential
+now-sdk auth --delete <alias>       # remove one
+```
+
+Guardrails:
+- **Confirm the target instance before any write** (`install`/`deploy`). Default to **dev/sub‑prod**;
+  never write to prod without explicit per‑action approval.
+- Credentials are cached locally (under the SDK/`.now` state) — **never commit** them, never echo
+  tokens. Prefer OAuth over stored basic passwords.
+- Per‑command override: most write commands accept `-a, --auth <alias>`.
+
+### B.2 Scaffold or convert an app (verified: `now-sdk init`, alias `create`)
+
+```powershell
+now-sdk init                 # interactive: new scoped app, or apply a template,
+                             # or convert a legacy/instance app into Fluent source
+```
+
+### B.3 Project shape (what `init` produces / what to expect)
 
 ```
-now.config.json                      # scope, scopeId, name, tsconfig path
-package.json                         # scripts + deps
-tsconfig (referenced by now.config)  # server TS config
+now.config.json     # scope, scopeId, name, tsconfigPath
+package.json        # scripts + deps + "imports": { "#now:*": "./@types/servicenow/fluent/*/index.js" }
 src/
   fluent/
-    index.now.ts                     # re-exports every *.now.ts (entrypoint)
-    tables.now.ts                    # Table() definitions
-    security.now.ts                  # Role() + Acl()
-    navigation.now.ts                # ApplicationMenu + modules
-    workspace.now.ts                 # Workspace + UxListMenuConfig + Dashboard + Applicability
-    ux-pages.now.ts                  # UX Builder pages/components (AUTH‑ONLY, see §7)
-    script-includes.now.ts           # ScriptInclude() metadata
-    business-rules.now.ts            # BusinessRule(), etc.
-    portal.now.ts                    # ServicePortal + SPPage + SPWidget (optional)
-  server/
-    script-includes/<Name>.server.js # server-side Script Include body (plain JS)
-    portal/<widget>/...              # SP widget assets (server/client/html/scss)
-tests/
-  validate-source.js                 # source-level validator
-docs/                                # design docs
-dist/app/                            # GENERATED by now-sdk build (do not edit)
-.now/                                # GENERATED: SDK state / auth profile cache (never commit)
+    index.now.ts    # MUST `export * from './<each>.now'` (entrypoint)
+    *.now.ts        # Table/Role/Acl/ScriptInclude/Workspace/ServicePortal/Flow/… definitions
+  server/           # plain-JS bodies for Script Includes, BR, SP widget assets, tsconfig.json
+@types/             # GENERATED glide type defs (now-sdk dependencies) — IntelliSense
+dist/               # GENERATED by now-sdk build (do not edit)
+.now/               # GENERATED SDK state / auth cache (NEVER commit)
+keys.ts             # stable Key/SysId map (Now.ID) — keep in source for deterministic identity
 ```
 
-Regenerated locally and never treated as source of truth / never committed:
-`node_modules/`, `dist/`, `.now/`. Auth material lives outside source control.
+Never commit / regenerated locally: `node_modules/`, `dist/`, `.now/`, `@types/`.
 
----
-
-## 4. now.config.json
+### B.4 now.config.json
 
 ```json
 {
   "scope": "<scope>",
   "scopeId": "<scopeId>",
   "name": "<AppName>",
-  "description": "<one-line description>",
   "tsconfigPath": "./src/server/tsconfig.json"
 }
 ```
 
-**Stable scope sys_id** (deterministic, so installs match the same records on the instance):
+Stable scope sys_id (deterministic, so re‑installs match the same app):
 
 ```powershell
 node -e "console.log(require('crypto').createHash('md5').update('<scope>').digest('hex'))"
 ```
 
-When changing vendor code/scope: update scope everywhere, set a new stable `scopeId`, clean
-`dist/`+`.now/`, re‑auth if needed, rebuild and re‑install. The deterministic `scopeId` keeps the same
-app identity across installs so you update in place rather than duplicate.
-
----
-
-## 5. package.json scripts (template)
+### B.5 package.json scripts (verified command names)
 
 ```json
 {
   "scripts": {
-    "test": "node tests/validate-source.js",
     "build": "now-sdk build",
-    "auth": "now-sdk auth",
-    "install:app": "now-sdk install",
-    "deploy": "now-sdk deploy",
+    "deploy": "now-sdk install",
     "transform": "now-sdk transform",
-    "pack:sdk": "now-sdk pack"
+    "types": "now-sdk dependencies",
+    "pack:sdk": "now-sdk pack",
+    "test": "node tests/validate-source.js"
   },
-  "dependencies": { "@servicenow/sdk": "4.7.2" },
-  "devDependencies": { "typescript": "^5.9.3" }
+  "devDependencies": {
+    "@servicenow/sdk": "4.7.2",
+    "@servicenow/glide": "27.0.5",
+    "typescript": "5.5.4"
+  }
 }
 ```
 
-> Always run the live `now-sdk` help for exact flags/subcommands of your installed version
-> (`npx now-sdk install --help`, `npx now-sdk deploy --help`, `npx now-sdk auth --help`) and via
-> `explain` (§6). Subcommand surface evolves between minor releases.
+Get full IntelliSense for server‑side glide APIs:
+
+```powershell
+now-sdk dependencies                 # download glide.*.d.ts type defs + fluent dependency types
+now-sdk dependencies --type-defs-only
+now-sdk dependencies --add sys_security_acl --scope global   # add a dependency to now.config.json
+```
 
 ---
 
-## 6. Authenticating + the `explain` documentation system
+## PART C — The `explain` documentation system (MANDATORY before writing Fluent)
 
-### 6.1 Authenticate to the instance (once per instance/profile)
-
-```powershell
-npx @servicenow/sdk auth --help            # discover exact flags for your version
-npx @servicenow/sdk auth                   # interactive: instance URL + OAuth/basic credentials
-```
-
-- Prefer **OAuth** (registered OAuth app on the instance) so no password is stored in plaintext.
-- Auth profiles are cached under `.now/` (per machine/user) — **never commit** them.
-- Verify the active profile/instance before any write (`install`/`deploy`). Re‑auth when the token
-  expires; tokens are revocable on the instance side.
-
-### 6.2 `explain` — mandatory before changing Fluent
-
-The SDK ships its own docs. **Always consult them before writing/altering any Fluent metadata** — APIs
-evolve and `explain` is the source of truth. This is identical to the offline mode.
+The SDK ships its own docs; **the API is the source of truth, not memory.** Always consult `explain`
+before writing/altering any Fluent metadata (the `fluent:now-sdk-explain` skill automates this).
 
 ```powershell
-npx @servicenow/sdk explain --list --format=raw                 # list every topic + tags
-npx @servicenow/sdk explain <topic> --list --peek --format=raw  # search topics, show descriptions
-npx @servicenow/sdk explain <topic> --peek --format=raw         # preview a topic (do this first!)
-npx @servicenow/sdk explain <topic> --format=raw                # read the full topic
+now-sdk explain --list --format=raw                 # list every topic + search tags
+now-sdk explain <topic> --list --peek --format=raw  # search topics, show descriptions
+now-sdk explain <topic> --peek --format=raw         # PREVIEW first (saves context, avoids wrong topic)
+now-sdk explain <topic> --format=raw                # read full topic
 ```
 
 Rules:
 - **Never** open a full topic without `--peek` first.
-- The first time per session, skim everything under `explain quickstart --list`, plus the
-  **`auth`, `install`, `deploy`, `transform`** skill topics (these are the ones the offline mode
-  deliberately ignored).
-- Errors: `No documentation found` = wrong name, use `--list`; `No match` = try another search term.
-
-Useful search terms: metadata types (`Table`, `Acl`, `Role`, `ScriptInclude`, `BusinessRule`,
-`ClientScript`, `UiAction`, `UiPolicy`, `Form`, `List`), surfaces (`workspace`, `ui-builder`,
-`serviceportal`, `uipage`, `dashboard`), lifecycle skills (`build`, `install`, `deploy`, `transform`,
-`pack`), conventions (`naming`, `structure`, `scoping`).
+- First time per session: skim `explain fluent-overview`, `developing-apps-guide`, and the relevant
+  `*-guide` topics for the surfaces you're about to touch.
+- `No documentation found` = wrong name → use `--list`. `No match` = try a different search term.
 
 ---
 
-## 7. Fluent capability matrix (full‑potential, authenticated)
+## PART D — Verified Fluent capability matrix (full potential)
 
-Everything the offline mode supports still applies **plus** the surfaces that need a live instance.
+All of the following are **real `explain` topics in 4.7.2** — declarable in Fluent and installable to a
+connected instance. (Grouped; consult each `*-api` / `*-guide` topic for exact syntax.)
 
-| Capability | Fluent API | Record table | Notes |
-|---|---|---|---|
-| Tables & columns | `Table()` | `sys_db_object`, `sys_dictionary` | column types below |
-| Choice lists | choice columns | `sys_choice` / `sys_choice_set` | value + label |
-| Roles | `Role()` | `sys_user_role` | `containsRoles` for hierarchy |
-| ACLs | `Acl()` | `sys_security_acl` (+ `_role`) | `type:'record'` and `type:'ux_route'` |
-| App menu & modules | `ApplicationMenu()`, modules | `sys_app_application`, `sys_app_module` | backend nav |
-| Workspace (Now Experience) | `Workspace()` | `sys_ux_*` | landing path, tables |
-| Workspace list config | `UxListMenuConfig()` | `sys_ux_list_menu_config`, `sys_ux_list*` | categories + lists + queries |
-| Visibility/applicability | `Applicability()` | `sys_ux_applicability` | role-based visibility |
-| Dashboards | `Dashboard()` | `par_dashboard*` | widgets, charts, scores |
-| **UX Builder pages** | `UxPage()` / UI Builder defs | `sys_ux_page` | **AUTH‑ONLY** — install round‑trips with the instance UI Builder |
-| **UX components / macroponents** | UI Builder defs | `sys_ux_component`, `sys_ux_macroponent` | **AUTH‑ONLY** — custom single‑page experiences now possible |
-| Script Include | `ScriptInclude()` | `sys_script_include` | server JS via `Now.include` |
-| Business Rule | `BusinessRule()` | `sys_script` | server logic |
-| Client Script | `ClientScript()` | `sys_script_client` | classic UI |
-| UI Action / UI Policy | `UiAction()`, `UiPolicy()` | `sys_ui_action`, `sys_ui_policy` | buttons, field rules |
-| Form / List layout | `Form()`, `List()` | `sys_ui_form/section/element`, `sys_ui_list` | classic UI layout |
-| Classic UI Page | `UiPage()` | `sys_ui_page` | Jelly/HTML or React |
-| Service Portal | `ServicePortal()` + `SPPage()` + `SPWidget()` | `sp_portal`, `sp_page`, `sp_widget` | still fully supported |
-| Portal theme / menu / provider | `SPTheme()`, `SPMenu()`, `SPAngularProvider()` | `sp_theme`, `sp_instance_menu`, `sp_angular_provider` | branding/nav |
-| Flows | `Flow()` | `sys_hub_flow` | (consult explain) |
-| ATF tests | `AtfTest()` | `sys_atf_test` | can also **run** ATF on the connected instance |
+**Data model**
+- `Table()` (`sys_db_object`/`sys_dictionary`), table augments, dictionary `OverrideColumn`.
+- Columns: `StringColumn`, `MultiLineTextColumn`, `HtmlColumn`, `ChoiceColumn`, `BooleanColumn`,
+  `IntegerColumn`, `DecimalColumn`/`FloatColumn`, `DateColumn`/`DateTimeColumn`/`TimeColumn`/duration,
+  `ReferenceColumn` (cascade), `ListColumn`/`SlushBucketColumn`, `JsonColumn`, `UrlColumn`,
+  `EmailColumn`, `Password2Column`, `GuidColumn`, `DocumentIdColumn`, `ConditionsColumn`,
+  `ScriptColumn`, translated/i18n columns, and more.
 
-**Key gain over offline mode:** custom **UX Builder pages/components/macroponents**
-(`sys_ux_page`, `sys_ux_component`, `sys_ux_macroponent`) are now in play, because `install`
-reconciles them with the live UI Builder editor. The offline mode had to fall back to Service Portal
-or classic UiPage for custom single‑page UIs — here you can build a true UX Builder experience.
-Service Portal and classic UiPage remain valid choices when you prefer them.
+**Security**
+- `Role()`, `Acl()` (`type:'record'` and `type:'ux_route'`), `DataPolicy()`, `CrossScopePrivilege()`.
 
-### Column types (Fluent `Table()`)
-`StringColumn`, `MultiLineTextColumn`, `ChoiceColumn`, `BooleanColumn`, `IntegerColumn`,
-`DateColumn`/date‑time, `ReferenceColumn` (with `cascadeRule`), `ListColumn` / Glide List. Define
-`index`/composite indexes for lookup/filter fields.
+**Server logic & automation**
+- `ScriptInclude()`, `BusinessRule()`, `ScheduledScript()`, `ScriptAction()` (events),
+  `EmailNotification()`, `InboundEmailAction()`, `Property()` (system properties), `RestApi()`
+  (scripted REST), `ImportSet()` (transform maps), `Sla()`.
+
+**Flow / Workflow Automation (wfa)**
+- `Flow()`, `Subflow()`, custom `Action()`, `FlowStage`, triggers, flow logic.
+
+**Classic UI**
+- `ClientScript()`, `UiAction()`, `UiPolicy()`, `Form()`, `List()`, `UiPage()` (Jelly/HTML **or**
+  React/Polaris — supports SPA‑style custom pages), platform views.
+
+**Now Experience / Workspace**
+- `Workspace()` (`sys_ux_page_registry`), `UxListMenuConfig()`, `Applicability()`, `Dashboard()`.
+
+**Service Portal** (fully supported — see Part E)
+- `ServicePortal()`, `SPPage()`, `SPWidget()`, `SPTheme()`, `SPMenu()`, `SPAngularProvider()`,
+  `SPHeaderFooter()`, `SPWidgetDependency()`, `SPPageRouteMap()`.
+
+**Service Catalog**
+- `CatalogItem()`, `CatalogItemRecordProducer()`, `VariableSet()`, `CatalogUiPolicy()`,
+  `CatalogClientScript()`, and the full set of catalog `*Variable` types.
+
+**Testing & quality**
+- `Test()` (ATF, `sys_atf_test`) — definitions can also **run** on the connected instance.
+- Instance Scan checks: `ColumnTypeCheck`, `LinterCheck`, `TableCheck`, `ScriptOnlyCheck`.
+
+**AI / Now Assist**
+- `NowAssistSkillConfig()`, `AiAgent()`, `AiAgenticWorkflow()`.
+
+**Escape hatches**
+- `Record()` (generic, any table), `$override` (unknown/custom `x_`/`u_` properties),
+  `UserPreference()`.
+
+### ⚠ NOT authorable in Fluent (verified — no such `explain` API)
+Custom **UX Builder pages / components / macroponents** (`sys_ux_page`, `sys_ux_component`,
+`sys_ux_macroponent`). Fluent only models the **workspace registry / list‑menu / applicability /
+dashboard** UX surfaces above — there is **no `UxPage()`/component/macroponent API**, with or without
+auth. Two valid paths:
+1. **Build a custom single‑page UI as Service Portal (`SPPage`+`SPWidget`) or a React `UiPage`** —
+   both are 100 % source‑authorable.
+2. **Author the UX Builder page on the instance UI, then `now-sdk transform`/`download` it into Fluent
+   source** — this is the round‑trip auth unlocks (see D.3). Net‑new authoring from scratch in Fluent
+   is not supported.
 
 ### Cross‑cutting helpers
-- `Now.ID['stable_key']` → stable `$id` so re‑installs produce the same sys_id (idempotent delivery).
-- `Now.include('relative/path.ext')` → inline an external file into a record field.
-- `Now.ref(...)` → reference another defined record.
-- `index.now.ts` must `export * from './<each>.now'` so every metadata file is in the build.
+- `Now.ID['stable_key']` (+ `keys.ts`) → stable `$id`/sys_id so re‑installs are idempotent.
+- `Now.include('relative/path.ext')` → inline an external file (server JS, client JS, HTML, CSS) into a
+  record field.
+- `Now.ref(...)` → reference another defined record (coalesce/foreign key).
+- `Now.attach(...)` → attach an image/file (logo, icon).
+- `index.now.ts` must `export * from './<each>.now'` so every metadata file is built.
 
 ---
 
-## 8. Service Portal specifics (still apply when you use SP)
+## PART D.3 — Build / install / round‑trip lifecycle (verified command surface)
 
-These are unchanged from offline mode — internalize them even with auth:
+The full `now-sdk` command set (`now-sdk --help`): `auth`, `init` (alias `create`),
+`download <directory>`, `build [source]`, `install` (**alias `deploy`**), `dependencies [sysIds..]`,
+`transform`, `clean [source]`, `pack [source]`, `explain [topic]`.
+
+> There is **no separate promotion command**: `deploy` is an *alias of `install`*. You promote by
+> installing against a different instance/credential, or by exporting an update set for change control.
+
+### Build
+```powershell
+now-sdk build                 # compile Fluent → dist/ + installable package
+now-sdk build --frozenKeys    # CI: fail if keys/sysIds drift (deterministic identity)
+now-sdk build --errorOnConflict   # treat Fluent↔XML sys_id conflicts as errors
+now-sdk build --skipClean
+```
+
+### Install (push to the connected instance) — verified flags
+```powershell
+now-sdk install                         # install/update app on the default-auth instance
+now-sdk install -a <alias>              # target a specific credential/instance
+now-sdk install --demoData              # (default true) include demo data
+now-sdk install --skip-flow-activation  # don't auto-publish flows
+now-sdk install -r                      # reinstall: uninstall+reinstall (⚠ on-instance-only metadata is LOST)
+now-sdk install -b                      # open the sys_app page in browser after install
+now-sdk install -i                      # info on the most recent install of this app
+```
+`install` is idempotent by sys_id (update in place). Re‑run after every change; no manual XML import,
+no Retrieved‑Update‑Sets step.
+
+### Round‑trip (what auth uniquely unlocks)
+```powershell
+now-sdk download <directory>            # download app metadata from the instance
+now-sdk transform -a <alias>            # download instance XML records → Fluent source
+now-sdk transform --from <path>         # convert local XML file(s)/dir → Fluent source
+now-sdk transform --table <t1,t2>       # transform by table hierarchy
+```
+Use `transform`/`download` to pull instance‑side work (incl. UX Builder pages built in the UI) back
+into source, or to convert a legacy app. Review the generated diff before committing.
+
+### Package / clean
+```powershell
+now-sdk pack                            # zip a source/installable artifact (NOT an update set)
+now-sdk clean                           # clean output dirs
+```
+
+### CI / headless (verified via `explain ci-integration`)
+Authenticate without interactive prompts using env vars:
+```
+SN_SDK_NODE_ENV, SN_SDK_AUTH_TYPE (basic|oauth|client-credentials),
+SN_SDK_INSTANCE_URL, SN_SDK_USER, SN_SDK_USER_PWD,
+SN_SDK_OAUTH_CLIENT_ID, SN_SDK_OAUTH_CLIENT_SECRET
+```
+Pair with `now-sdk build --frozenKeys` so a CI build fails if `keys.ts`/sys_ids drift.
+
+---
+
+## PART E — Service Portal specifics (hard‑won; read before building SP)
+
+(Apply whenever you use Service Portal — auth does not relax these.)
 
 1. **`SPPage` takes no top‑level `$id`** (keyed by `pageId`); nested containers/rows/columns/instances
-   do use `$id: Now.ID[...]`.
+   **do** use `$id: Now.ID[...]`. A top‑level `$id` on SPPage fails the build.
 2. **Widget client script must be a bare named function**: `function controller() { var c = this; … }`.
-   `api.controller = function(){…}` is rejected by the build. Dependencies inject as parameters.
+   `api.controller = function(){…}` is **rejected**. Dependencies inject as parameters
+   (`function controller(spModal) { … }`).
 3. **Browser globals are blocked** in client scripts: no `window`, `document`, `alert`, `confirm`.
    Use injected AngularJS services (`spModal.confirm()`, `spModal.alert()`).
-4. **`customCss` is served AS‑IS, NOT Sass‑compiled.** Use plain CSS only; theme via CSS custom
-   properties (`--var`). Any Sass syntax discards the whole stylesheet (widget renders unstyled).
-5. **Bootstrap 3** classes are available globally in SP.
-6. Widget server script runs server‑side in the app scope: same‑scope Script Includes callable
-   directly. `data.*`→client; `c.data.*` + `c.server.update()` round‑trips, posted `data` arrives as
-   `input`.
-7. SP widget fields in output: `template`, `client_script`, `script`, `css`, `option_schema`, etc.
+4. **`customCss` is served AS‑IS, NOT Sass‑compiled.** Plain CSS only — no nesting, `$variables`,
+   `@each`, `#{}`. Any Sass syntax makes the browser discard the **entire** stylesheet (symptom:
+   widget renders as unstyled text). Theme via **CSS custom properties** (`--var`).
+5. **Bootstrap 3** classes are available globally in Service Portal.
+6. Widget server script runs server‑side in the app scope: same‑scope Script Includes are callable
+   directly (no GlideAjax). `data.*` → client; `c.data.*` + `c.server.update()` round‑trips; posted
+   `data` arrives as `input`.
+7. SP widget fields in build output: `template`, `client_script`, `script`, `css`, `option_schema`,
+   `demo_data`, etc.
+
+Consult `explain service-portal-guide` and `service-portal-reference-guide` for the full set.
 
 ---
 
-## 9. Scoped GlideRecord, security & common platform patterns
+## PART F — Platform patterns & security discipline
 
-(Identical platform discipline to offline mode — auth doesn't relax these.)
-
-- **Scoped GlideRecord enforces ACLs by default** — widgets/automation respect the Fluent ACLs.
+- **Scoped GlideRecord enforces ACLs by default** — widgets/automation respect your Fluent ACLs.
 - **Logical deletion**: every business table carries `active` (Boolean, default true); "delete" sets
   `active=false`; consumers filter `active=true`.
 - **Auto‑number**: a `number` String column + platform Number Maintenance (`sys_number`) per table.
 - **Retention / data‑minimization**: a `Date` column (e.g. `retention_date`), a configurable retention
   property, a scheduled job listing expiring records, UI Actions to extend/delete.
 - **Scope protection**: restricted runtime access; grant cross‑scope only to named consumer scopes via
-  `ScriptInclude` `accessibleFrom`.
-- **Downloadable HTML export** pattern remains available (SP widget → Blob download).
-
-ACL pattern that builds cleanly:
-- `type:'record'` ACLs per table per operation (`read`/`create`/`write`/`delete`), `read` to
-  reader+editor, write‑ops to editor; `adminOverrides:true`.
-- `type:'ux_route'` ACL `name:'<workspace-path>.*'`, `operation:'read'` for workspace/route access.
+  `CrossScopePrivilege()` / `ScriptInclude` `accessibleFrom`.
+- **ACL pattern that builds cleanly**: `type:'record'` ACLs per table per operation
+  (`read`/`create`/`write`/`delete`), `read` to reader+editor, write‑ops to editor,
+  `adminOverrides:true`; plus a `type:'ux_route'` ACL `name:'<workspace-path>.*'`, `operation:'read'`
+  for workspace route access.
 
 ---
 
-## 10. Install & deploy lifecycle (replaces the offline XML converter)
+## PART G — Verification & the AI operating contract (fresh session)
 
-In authenticated mode you do **not** need `tools/sdk-dist-to-update-set.js`. The SDK creates and
-manages the update set on the instance for you.
+1. **Configure the session** (Part A): `now-sdk --version` works; `claude plugin list` shows
+   `servicenow-sdk` and `superpowers` enabled. If not, install per A.2/A.3.
+2. **Authenticate deliberately** (Part B): confirm the **target instance** before any write; default
+   to dev/sub‑prod; keep credentials/tokens secret and uncommitted.
+3. **Before changing any Fluent metadata, consult `explain`** (`--peek` then full) via the
+   `fluent:now-sdk-explain` skill — the API evolves; never code from memory.
+4. **Follow the Superpowers discipline**: brainstorm → write a plan → TDD/validators → implement →
+   verify. Add `validate-source.js` assertions before risky changes; keep them green.
+5. **Build → install → verify on the live instance with fresh output** before claiming success:
+   load the app, the workspace/portal route, exercise ACLs as a non‑admin, **run ATF** on the
+   instance. Evidence, not assertion.
+6. Keep secrets and real personal data out of artifacts; demo/seed data must be non‑personal.
+7. **Deliver**: the app installed/verified on the named instance, the source repo (Fluent + `keys.ts`),
+   a short note of what to verify and which roles to assign; optional `now-sdk pack` ZIP; for
+   air‑gapped/change‑controlled prod, an exported update set instead of a direct `deploy`.
 
-### 10.1 First install onto a fresh instance
-```powershell
-npm install
-npx now-sdk auth                 # once per instance (verify target!)
-npm test
-npm run build                    # now-sdk build → dist/app
-npm run install:app              # now-sdk install → pushes scoped app to the connected instance
+**"Ready to develop" only after confirming:** Node/npm present; `now-sdk` ≥ 4.6; both skills enabled;
+`now-sdk auth --list` shows the intended instance as default; `now-sdk dependencies` run (types
+present); `npm test` passes; `now-sdk build` passes; `now-sdk install` succeeded and the app is
+verified in the instance UI; ATF run if in scope; no secrets committed.
+
+---
+
+## Appendix — Quick command reference (all verified, SDK 4.7.2)
+
 ```
-`install` creates the scoped app (if absent) and applies the built records inside an SDK‑managed
-update set. Re‑running is idempotent by sys_id (update in place).
+# session setup
+npm install -g @servicenow/sdk
+claude plugin marketplace add anthropics/claude-plugins-official
+claude plugin marketplace add obra/superpowers-marketplace
+claude plugin install servicenow-sdk@claude-plugins-official
+claude plugin install superpowers@superpowers-marketplace
+claude plugin list
 
-### 10.2 Iterative dev loop
+# auth
+now-sdk auth --add <instance> --type oauth --alias <alias>
+now-sdk auth --list ; now-sdk auth --use <alias>
+
+# project
+now-sdk init                       # scaffold / convert
+now-sdk dependencies               # glide type defs + fluent deps
+now-sdk explain --list --format=raw
+now-sdk explain <topic> --peek --format=raw
+
+# dev loop
+now-sdk build                      # → dist/
+now-sdk install [-a <alias>] [-b]  # push to instance (alias: now-sdk deploy)
+now-sdk transform -a <alias>       # pull instance records → Fluent source
+now-sdk pack                       # source ZIP (NOT an update set)
+now-sdk clean
 ```
-edit Fluent / server JS  →  npm run build  →  npm run install:app  →  verify in the instance UI
-```
-Keep the cycle tight. For UX Builder surfaces, `install` round‑trips with the instance editor so you
-can then refine visually and pull changes back (see §10.4).
-
-### 10.3 Promote / deploy
-```powershell
-npx now-sdk deploy --help        # check exact promotion semantics for your version
-npm run deploy
-```
-Use `deploy` to promote between connected environments per your release process. **Prod promotion
-stays behind change control** — confirm the target every time.
-
-### 10.4 Round‑trip / reconcile with `transform`
-`now-sdk transform` reconciles artifacts and can sync instance‑side changes back into source (useful
-after editing UX Builder pages or config directly on the instance). Always `explain transform` and
-`--help` first; review the diff before committing pulled changes into source.
-
-### 10.5 When to still emit an XML update set
-For air‑gapped prod where ops import manually, generate a `sys_remote_update_set` XML instead of
-`deploy`. Use the **offline‑converter handoff** for that path; everything else here stays the same.
-
----
-
-## 11. Seed / demo data
-
-Seed data is still a **ServiceNow XML data unload**, imported as **data** (not as the app). Generate
-deterministic sys_ids and only **non‑personal** demo values. Import via any list →
-right‑click column header → **Import XML**. With auth you may alternatively script data loads, but keep
-operational/personal data out of source artifacts.
-
----
-
-## 12. Validators & testing (TDD discipline)
-
-- **`validate-source.js`** — same source checks as offline: `now.config.json` present; expected
-  scope/name; `scopeId` is 32‑hex; expected tables/roles/choices present; workspace path + route ACL
-  present; Script Include metadata present; **old scope absent**; project‑specific behavioral markers.
-- **Live verification (new in auth mode):** after `install`, verify on the instance — open the app,
-  load the workspace/UX page/portal route, exercise ACLs as a non‑admin, and **run ATF tests** on the
-  connected instance (`AtfTest()` definitions can execute there). Capture real output as evidence.
-- You no longer need a packaged‑update‑set validator for the normal flow (the SDK owns the update set);
-  keep it only if you also emit XML for air‑gapped prod.
-
----
-
-## 13. End‑to‑end sequence
-
-```powershell
-npm install
-npx now-sdk auth          # connect (verify instance!)
-npm test                  # source validation
-npm run build             # now-sdk build → dist/app
-npm run install:app       # push to the connected instance
-# verify in the instance UI + run ATF tests
-npm run deploy            # optional: promote per release process
-npm run transform         # optional: reconcile / pull instance changes back to source
-npm run pack:sdk          # optional source ZIP (NOT an update set)
-```
-
----
-
-## 14. Install on the target (SDK does it; human verifies)
-
-With auth, the tool performs the install/deploy. The human step is **verification & enablement**:
-1. Confirm the app appears in the target instance (correct scope + version).
-2. Load the workspace / UX Builder page / portal route; exercise a create/read/update as a real role.
-3. Assign the app roles to users/groups.
-4. Confirm prerequisite plugins are active (Now Experience/UI Builder for UX pages; Service Portal for
-   SP surfaces).
-
-Manual Retrieved‑Update‑Sets import is only for the air‑gapped‑prod fallback (offline handoff).
-
----
-
-## 15. Troubleshooting (symptom → cause → fix)
-
-| Symptom | Cause | Fix |
-|---|---|---|
-| `now-sdk auth` fails / token rejected | wrong instance URL, expired token, missing OAuth app | Re‑auth; verify URL; register/confirm the OAuth app on the instance |
-| `install` says insufficient rights | user lacks scoped‑app install rights | Use admin or App Engine/delegated‑dev role on the target |
-| `install` deployed to the wrong instance | active auth profile pointed elsewhere | Always verify the active profile/instance before write commands |
-| UX Builder page didn't materialize | plugin missing or wrong topic API | Confirm Now Experience/UI Builder plugin; `explain` the UX page API; re‑install |
-| SP widget renders as unstyled plain text | Sass syntax in `customCss` | Plain CSS only; theme via CSS custom properties |
-| Build error "Client controller must contain a JavaScript function" | used `api.controller = function(){}` | Use bare `function controller() { var c = this; … }` |
-| Build error: `window`/`document` not allowed | browser global in client script | Use injected services (`spModal`, etc.) |
-| Build error: `$id` not allowed on SPPage | SPPage keyed by `pageId` | Remove top‑level `$id` (keep on containers/rows/columns/instances) |
-| Duplicate‑key warnings on role containment | `sys_user_role_contains` uniqueness on role pair | Validate containment post‑install; harmless on re‑commit |
-| `explain` not found / errors | SDK < 4.6 or wrong topic | Upgrade SDK; use `--list` |
-| Need air‑gapped prod delivery | no auth allowed in that environment | Switch to the offline‑converter handoff for that target only |
-
----
-
-## 16. AI operating contract for a fresh session (auth mode)
-
-1. Read this file. Treat it as the authoritative workflow memory.
-2. **Authenticate deliberately**: confirm the **target instance** before any `install`/`deploy`;
-   default to dev/sub‑prod; never write to prod without explicit per‑action approval. Keep
-   credentials/tokens secret and out of source control.
-3. Before changing any Fluent metadata, **consult `explain`** (`--peek` then full) for the exact API,
-   including the `auth`/`install`/`deploy`/`transform` lifecycle topics.
-4. Keep `validate-source.js` green; add source assertions before risky changes.
-5. Build → install → **verify on the live instance with fresh output** (load the UI, exercise ACLs,
-   run ATF) before claiming success — evidence, not assertion.
-6. Keep secrets and real personal data out of artifacts and seed data.
-7. Deliver: the installed/deployed app on the named instance, a short note of what to verify and which
-   roles to assign, optional source ZIP, and — only for air‑gapped prod — an XML update set via the
-   offline handoff.
-
-"Ready to develop" only after confirming: Node/npm available; `npm install` done; **`now-sdk auth`
-succeeded against the intended instance**; `npm test` passes; `now-sdk build` passes; `now-sdk install`
-succeeded and the app is verified in the instance UI; ATF run if in scope; no secrets committed.
